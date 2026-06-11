@@ -26,6 +26,17 @@ textarea#txtin{width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;fo
 .warn{background:#fff3cd;border:1px solid #ffc107;padding:5px 10px;margin:5px 8px;font-size:10px;border-radius:4px}
 .hint{padding:2px 8px 4px;color:#666;font-size:10px;font-style:italic}
 #cuaderno{padding:0 8px 8px;display:none}
+/* ===== Panel de revisión post-parseo ===== */
+#panelAdv{margin:6px 8px}
+#panelAdv h3{font-size:11px;color:#1e3a5f;margin-bottom:4px}
+.adv{display:flex;gap:8px;padding:6px 10px;margin-bottom:4px;border-radius:4px;font-size:10px;align-items:flex-start}
+.adv-alta{background:#fdecea;border:1px solid #e74c3c;color:#7b241c}
+.adv-media{background:#fff3cd;border:1px solid #ffc107;color:#7d6608}
+.adv-info{background:#eef2f7;border:1px solid #b0bec5;color:#455a64}
+.adv-ok{background:#eafaf1;border:1px solid #27ae60;color:#1e8449;padding:6px 10px;border-radius:4px;font-size:10px}
+.adv-icono{font-size:12px;line-height:1.2}
+.adv-motivo{font-weight:bold}
+.adv-linea{font-family:monospace;color:#555;margin-top:2px;font-size:9px;word-break:break-word}
 table{width:100%;border-collapse:collapse;border:2px solid #333;table-layout:fixed}
 td{border:1px solid #444;padding:2px 4px;vertical-align:middle}
 .th{font-weight:bold;background:#e8e8e8}
@@ -93,6 +104,51 @@ function fmtC(n){
 }
 function xV(t){var i=t.indexOf(':');return i>=0?t.slice(i+1).trim():t.trim();}
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+/* ===== Sistema de revisión post-parseo (NUEVO) ===== */
+var ADV=[];
+function regAdv(nivel,motivo,linea){
+  // nivel: 'alta' | 'media' | 'info'
+  ADV.push({nivel:nivel,motivo:motivo,linea:linea||''});
+}
+function pareceMed(ln){
+  if(/\b\d+([,\.]\d+)?\s*(mg|mcg|g|gr|ml|cc|ui|amp|puff|gotas|%)\b/i.test(ln))return true;
+  if(/\b(vo|ev|im|sc|sl|vr)\b/i.test(ln)&&/\d/.test(ln))return true;
+  return false;
+}
+function detectarDuplicados(meds){
+  var seen={};
+  for(var i=0;i<meds.length;i++){
+    var n=(meds[i].n||'').trim();
+    if(!n||/^sos/i.test(n))continue;
+    var w=n.toLowerCase().split(/\s+/)[0].replace(/[^a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1]/g,'');
+    if(w.length<4)continue;
+    if(seen[w]){
+      regAdv('media','Posible duplicado: "'+seen[w]+'" y "'+n+'" podr\u00edan ser el mismo medicamento. Verifique que no se administre dos veces.','');
+      seen[w]=null;
+    } else if(seen[w]!==null){
+      seen[w]=n;
+    }
+  }
+}
+function renderAdv(){
+  if(!ADV.length){
+    return '<div class="adv-ok">&#10003; Indicaci\u00f3n interpretada sin observaciones. Verifique igualmente la tabla antes de imprimir.</div>';
+  }
+  var ord={alta:0,media:1,info:2};
+  var lista=ADV.slice().sort(function(a,b){return ord[a.nivel]-ord[b.nivel];});
+  var nAlta=0;for(var k=0;k<lista.length;k++)if(lista[k].nivel==='alta')nAlta++;
+  var h='<h3>Revisi\u00f3n del parseo &mdash; '+lista.length+' observaci'+(lista.length===1?'\u00f3n':'ones')+(nAlta?' ('+nAlta+' requiere'+(nAlta===1?'':'n')+' verificaci\u00f3n manual)':'')+'</h3>';
+  for(var i=0;i<lista.length;i++){
+    var a=lista[i];
+    var ic=a.nivel==='alta'?'&#9888;':a.nivel==='media'?'&#9889;':'&#8505;';
+    h+='<div class="adv adv-'+a.nivel+'"><span class="adv-icono">'+ic+'</span><div>'+
+       '<div class="adv-motivo">'+esc(a.motivo)+'</div>'+
+       (a.linea?'<div class="adv-linea">&quot;'+esc(a.linea)+'&quot;</div>':'')+
+       '</div></div>';
+  }
+  return h;
+}
 
 function xH(tx){
   var lo=tx.toLowerCase(),h=[];
@@ -175,6 +231,7 @@ function clas(ln){
 var TSOS=['insomnio','agitaci','diston','convuls','angustia','ansiedad','dolor','fiebre','deposicion','constipaci','fleet','hiperglicemia','n\xe1useas','nauseas','crisis','si presenta'];
 
 function procTexto(texto){
+  ADV=[]; // NUEVO: reiniciar revisión en cada parseo
   var lineas=texto.split('\n'),arr=[];
   for(var i=0;i<lineas.length;i++){var l=lineas[i].trim();if(l)arr.push(l);}
   var r={dx:'',al:'',depot:'',nom:'',med:'',sos:{ag:'',ino:'',di:'',lib:'',libL:'SOS __________:'},sosX:[],enf:[],ins:[],meds:[],ni:[]};
@@ -223,10 +280,33 @@ function procTexto(texto){
   var enSOS=false,enEnf=false;
   for(var j=0;j<arr.length;j++){
     var ln=arr[j],tipo=clas(ln),sn=ln.replace(/^\s*\d+[.):\-]\s*/,'').trim();
+    // NUEVO: aviso informativo de alias comercial interpretado
+    if(/depo[\s\-]?prodason[ae]/i.test(ln)){
+      regAdv('info','Se interpret\u00f3 "Depo-prodasone" como Sayana (medroxiprogesterona) y se envi\u00f3 a indicaciones de enfermer\u00eda.',ln);
+    }
+    // NUEVO: esta versión no procesa esquemas de descenso; alertar para revisión manual
+    if(/^d[i\u00ed]a\s*\d+/i.test(ln.trim())){
+      regAdv('alta','L\u00ednea de esquema de descenso ("D\u00cdA n") detectada. Esta versi\u00f3n no asigna sus horarios autom\u00e1ticamente: revise y complete manualmente los d\u00edas correspondientes en la tabla.',ln);
+    }
+    // NUEVO: fármacos con indicación de suspensión no van al plan farmacológico
+    if((/\bsuspender\b|\bse\s+suspende\b|\bsuspendid[oa]s?\b|\bsuspensi[o\u00f3]n\b/i.test(ln))
+       &&!/suspensi[o\u00f3]n\s+(oral|inyectable|extempor)/i.test(ln)
+       &&!/en\s+suspensi[o\u00f3]n/i.test(ln)){
+      if(/gradual|progresiv/i.test(ln)){
+        regAdv('alta','Posible suspensi\u00f3n GRADUAL (esquema de descenso): la l\u00ednea SE MANTUVO en el plan porque el f\u00e1rmaco a\u00fan se administra. Revise y ajuste los d\u00edas manualmente.',ln);
+        // no se excluye: sigue el flujo normal
+      } else {
+        regAdv('info','F\u00e1rmaco con indicaci\u00f3n de suspensi\u00f3n: NO se agreg\u00f3 al plan farmacol\u00f3gico.',ln);
+        continue;
+      }
+    }
     if(enSOS){
       if(ln.trim().charAt(0)==='-'){
         var lnLow=ln.toLowerCase();
-        if(lnLow.indexOf('evaluaci')>=0||lnLow.indexOf('traslado')>=0||lnLow.indexOf('interconsulta')>=0||lnLow.indexOf('llamar a m')>=0||lnLow.indexOf('control')>=0||lnLow.indexOf('urgencia')>=0){continue;}
+        if(lnLow.indexOf('evaluaci')>=0||lnLow.indexOf('traslado')>=0||lnLow.indexOf('interconsulta')>=0||lnLow.indexOf('llamar a m')>=0||lnLow.indexOf('control')>=0||lnLow.indexOf('urgencia')>=0){
+          regAdv('info','Sub-l\u00ednea SOS descartada por considerarse no farmacol\u00f3gica. Confirme que el descarte es correcto.',ln); // NUEVO
+          continue;
+        }
         addSOS(ln);continue;
       }
       var lt=ln.trim().toLowerCase(),isST=false;
@@ -242,7 +322,13 @@ function procTexto(texto){
       else if(tipo!=='D'&&tipo!=='I'){var te=sn.replace(/^\s*-\s*/,'').trim();if(te.length>3)r.enf.push(te);continue;}
       else continue;
     }
-    if(tipo==='I'||tipo==='D')continue;
+    if(tipo==='I'||tipo==='D'){
+      // NUEVO: si la línea descartada parece medicamento, alertar
+      if(pareceMed(ln)){
+        regAdv('alta','L\u00ednea descartada que parece contener un medicamento (tiene dosis o v\u00eda). Rev\u00edsela y agr\u00e9guela manualmente si corresponde.',ln);
+      }
+      continue;
+    }
     if(tipo==='ESOS'){enSOS=true;continue;}
     if(tipo==='SOS'){addSOS(sn);continue;}
     // CAMBIO 1: manejo de Insulina NPH → va a lista de fármacos con formato AM/PM
@@ -250,6 +336,9 @@ function procTexto(texto){
       var nums=(ln.match(/\d+/g)||[]).filter(function(n){return +n>0&&+n<200;});
       var nphAM=nums[0]||'';
       var nphPM=nums[1]||'';
+      if(!nphAM&&!nphPM){
+        regAdv('media','Insulina NPH detectada pero sin dosis AM/PM interpretables. Complete las unidades manualmente.',ln); // NUEVO
+      }
       var nphH=(nphAM?'AM: '+nphAM+'U':'')+(nphPM?'  PM: '+nphPM+'U':'');
       var nphHH=[];
       if(nphAM)nphHH.push({hora:'9',comp:1,display:'AM:'+nphAM+'U'});
@@ -266,11 +355,30 @@ function procTexto(texto){
     if(tipo==='MEDT'){r.med=xV(ln);continue;}
     if(tipo==='EENF'){enEnf=true;continue;}
     if(tipo==='ENF'){var t2=sn.replace(/^\s*-\s*/,'').trim();if(t2.length>3)r.enf.push(t2);continue;}
-    if(tipo==='FSD'){var fsdHH=xH(ln);r.meds.push({n:sn.replace(/^\s*-\s*/,'').trim(),h:bH(fsdHH),hh:fsdHH});continue;}
-    if(tipo==='FAR'){var md=pMed(sn);if(md)r.meds.push({n:md.resumen,h:bH(md.horarios),hh:md.horarios});else r.ni.push(ln);continue;}
-    if(ln.trim().length>5)r.ni.push(ln);
+    if(tipo==='FSD'){
+      var fsdHH=xH(ln);
+      if(!fsdHH.length)regAdv('media','Medicamento reconocido pero sin horario interpretable. Complete los horarios manualmente en la tabla.',ln); // NUEVO
+      r.meds.push({n:sn.replace(/^\s*-\s*/,'').trim(),h:bH(fsdHH),hh:fsdHH});
+      continue;
+    }
+    if(tipo==='FAR'){
+      var md=pMed(sn);
+      if(md){
+        if(!md.horarios.length)regAdv('media','Medicamento reconocido pero sin horario interpretable. Complete los horarios manualmente en la tabla.',ln); // NUEVO
+        r.meds.push({n:md.resumen,h:bH(md.horarios),hh:md.horarios});
+      } else {
+        r.ni.push(ln);
+        regAdv('alta','L\u00ednea con dosis que no pudo interpretarse como medicamento. Rev\u00edsela manualmente.',ln); // NUEVO
+      }
+      continue;
+    }
+    if(ln.trim().length>5){
+      r.ni.push(ln);
+      regAdv(pareceMed(ln)?'alta':'media','L\u00ednea no interpretada por el sistema. Verifique si debe agregarse manualmente al cuaderno.',ln); // NUEVO
+    }
   }
   for(var xi=0;xi<r.sosX.length;xi++)r.meds.push({n:r.sosX[xi],h:'',hh:[]});
+  detectarDuplicados(r.meds); // NUEVO
   return r;
 }
 function pMed(ln){
@@ -370,6 +478,13 @@ function buildTable(r){
     rows+='</tr>';
   }
   rows+='<tr><td colspan="5" style="padding:3px 5px"><b>NOMBRE DEL USUARIO: </b><input id="f_nom" class="ci" value="'+esc(r.nom)+'"></td><td colspan="3" style="padding:3px 5px"><b>M&Eacute;DICO TRATANTE: </b><input id="f_med" class="ci" value="'+esc(r.med)+'"></td></tr>';
+  // NUEVO: botonera de pegado vertical (Día 1 → día específico), oculta en impresión
+  rows+='<tr class="np"><td style="padding:2px 5px;font-size:9px;color:#555;font-style:italic">Pegado vertical desde D&iacute;a 1:</td>';
+  rows+='<td class="tc" style="padding:2px;font-size:8px;color:#888">Origen</td>';
+  for(var pv=1;pv<7;pv++){
+    rows+='<td class="tc" style="padding:2px"><button onclick="pegarVerticalDia('+pv+')" title="Pegar los horarios del D\u00eda 1 en este d\u00eda (sobrescribe la columna)" style="background:#1e3a5f;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:9px;padding:2px 6px">&#11015; Pegar</button></td>';
+  }
+  rows+='</tr>';
   return '<table>'+cg+'<tbody>'+rows+'</tbody></table>';
 }
 
@@ -379,6 +494,28 @@ function replicarTodo(){
     if(!nombre)continue;
     if(nombre.value.trim().toUpperCase().indexOf('SOS')===0)continue;
     replicarFila(mi);
+  }
+}
+// NUEVO: pegado vertical — replica la columna del Día 1 sobre un día específico, sobrescribiendo
+function pegarVerticalDia(diaDestino){
+  for(var mi=0;mi<N;mi++){
+    var nEl=document.getElementById('m'+mi+'n');
+    if(!nEl)continue;
+    var nom=nEl.value.trim();
+    if(!nom)continue;
+    if(nom.toUpperCase().indexOf('SOS')===0)continue; // filas SOS no tienen horarios
+    var fuente=[],tiene=false,s;
+    for(s=0;s<5;s++){
+      var e=document.getElementById('m'+mi+'d0s'+s);
+      var v=e?e.value:'';
+      fuente.push(v);
+      if(v.trim())tiene=true;
+    }
+    if(!tiene)continue; // Día 1 vacío en esta fila: no hay nada que pegar (y no se borra el destino)
+    for(s=0;s<5;s++){
+      var e2=document.getElementById('m'+mi+'d'+diaDestino+'s'+s);
+      if(e2)e2.value=fuente[s];
+    }
   }
 }
 function replicarFila(mi){
@@ -423,7 +560,7 @@ function procesar(){
   if(!txt.trim()){alert('Ingresa las indicaciones m\xe9dicas.');return;}
   var r=procTexto(txt);
   var c=document.getElementById('cuaderno');
-  c.innerHTML='<div class="warn np" id="niBox2" style="display:'+(r.ni.length?'block':'none')+'"><b>No interpretadas ('+r.ni.length+'):</b> '+r.ni.join(' | ')+'</div><p class="hint np">&#128161; Celdas editables &mdash; haz clic para completar.</p>'+buildTable(r);
+  c.innerHTML='<div id="panelAdv" class="np">'+renderAdv()+'</div><p class="hint np">&#128161; Celdas editables &mdash; haz clic para completar.</p>'+buildTable(r);
   c.style.display='block';
   document.getElementById('entrada').style.display='none';
   document.getElementById('btnBack').style.display='inline-block';
