@@ -92,6 +92,18 @@ function toSup(n){var s=String(Math.floor(Math.abs(n))),r='';for(var i=0;i<s.len
 function pFrac(s){
   if(!s)return 0;
   s=s.trim().replace(/\u00bd/g,'1/2').replace(/\u00bc/g,'1/4').replace(/\u00be/g,'3/4').replace(/,/g,'.');
+  // Normalizar espacios alrededor del "/" → "1 1/ 2"→"1 1/2", "11 /2"→"11/2"
+  s=s.replace(/\s*\/\s*/g,'/');
+  // Corregir fracción pegada tipo "11/2" (error de tipeo de "1 1/2"):
+  // Si num tiene exactamente 2 dígitos y den es 2,3,4,
+  // extraer primer dígito como entero y segundo como numerador → "1 1/2"
+  var pegM=s.match(/^(\d{2})\/([234])$/);
+  if(pegM){
+    var entStr=pegM[1].charAt(0), resStr=pegM[1].charAt(1), denStr=pegM[2];
+    var ent=+entStr, res=+resStr;
+    if(ent>=1&&res>0&&res<+denStr)s=ent+' '+res+'/'+denStr;
+    else return 0; // no es una fracción de comprimido válida
+  }
   var m=s.match(/^(\d+)\s+(\d+)\/(\d+)$/);if(m)return +m[1]+ +m[2]/+m[3];
   m=s.match(/^(\d+)\/(\d+)$/);if(m)return +m[1]/+m[2];
   var v=parseFloat(s);return isNaN(v)?0:v;
@@ -153,7 +165,20 @@ function renderAdv(){
 function xH(tx){
   var lo=tx.toLowerCase(),h=[];
   function add(hora,comp){hora=String(hora);for(var k=0;k<h.length;k++)if(h[k].hora===hora)return;h.push({hora:hora,comp:comp||1});}
-  var m3=tx.match(/([\d\u00bd\u00bc\u00be\/,\.]+)\s*-\s*([\d\u00bd\u00bc\u00be\/,\.]+)\s*-\s*([\d\u00bd\u00bc\u00be\/,\.]+)/);
+  // PASO 1: normalizar espacios alrededor del "/" primero
+  // cubre "11 /2", "1/ 2", "11 / 2" → todos quedan como "11/2", "1/2"
+  tx=tx.replace(/(\d)\s*\/\s*(\d)/g,'$1/$2');
+  // PASO 2: ahora que no hay espacios, normalizar fracciones pegadas
+  // "11/2"→"1 1/2", "21/2"→"2 1/2" (solo 2 dígitos, den 2/3/4)
+  tx=tx.replace(/(\d{2})\/([234])(?=[\s\-,]|$)/g,function(m,num,den){
+    var entStr=num.charAt(0),resStr=num.charAt(1);
+    var ent=+entStr,res=+resStr;
+    if(ent>=1&&res>0&&res<+den)return ent+' '+res+'/'+den;
+    return m;
+  });
+
+  // Token de dosis acepta "1 1/2" (con espacio) ademas del patron base
+  var m3=tx.match(/(\d+\s+\d+\/\d+|[\d\u00bd\u00bc\u00be\/,\.]+)\s*-\s*(\d+\s+\d+\/\d+|[\d\u00bd\u00bc\u00be\/,\.]+)\s*-\s*(\d+\s+\d+\/\d+|[\d\u00bd\u00bc\u00be\/,\.]+)/);
   if(m3){
     var a=[['9',m3[1]],['14',m3[2]],['21',m3[3]]];
     for(var i=0;i<a.length;i++){var c=pFrac(a[i][1]);if(c>0)add(a[i][0],c);}
@@ -330,7 +355,23 @@ function procTexto(texto){
       continue;
     }
     if(tipo==='ESOS'){enSOS=true;continue;}
-    if(tipo==='SOS'){addSOS(sn);continue;}
+    if(tipo==='SOS'){
+      // NUEVO: SOS inline — "fármaco dosis vía SOS condición (máx ...)"
+      // clas() ya detectó SOS; si tiene dosis, construir separación condición:medicamento
+      var sosIM=sn.match(/^([\s\S]+?\d+[,.]?\d*\s*(?:mg|g|gr|ml|mcg|ui|amp|puff|gotas|cc|%)(?:\s*(?:VO|IM|EV|SC|SL|VR))?(?:\s+lento)?)\s+\bsos\b\s*(.*)$/i);
+      if(sosIM){
+        var medSOSParte=sosIM[1].trim();
+        var condSOSParte=(sosIM[2]||'').trim();
+        var maxSOSM=condSOSParte.match(/\(\s*m[a\u00e1]x[^)]*\)/i);
+        var maxSOSStr=maxSOSM?' '+maxSOSM[0]:'';
+        condSOSParte=condSOSParte.replace(/\(\s*m[a\u00e1]x[^)]*\)/i,'').trim();
+        var lineaSOS=condSOSParte?condSOSParte+': '+medSOSParte+maxSOSStr:medSOSParte+maxSOSStr;
+        addSOS(lineaSOS);
+      } else {
+        addSOS(sn);
+      }
+      continue;
+    }
     // CAMBIO 1: manejo de Insulina NPH → va a lista de fármacos con formato AM/PM
     if(tipo==='NPH'){
       var nums=(ln.match(/\d+/g)||[]).filter(function(n){return +n>0&&+n<200;});
@@ -488,16 +529,72 @@ function buildTable(r){
   return '<table>'+cg+'<tbody>'+rows+'</tbody></table>';
 }
 
+// NUEVO: sistema de undo reversible para pegados
+var ultimoPegado={tipo:null,indice:null,estadoGuardado:null};
+function guardarEstadoCeldas(indices){
+  // indices: {filas: [0,1,2,...], dias: [0,1,...]} o similar
+  var estado={};
+  if(indices.filas){
+    indices.filas.forEach(function(mi){
+      estado['fila_'+mi]={};
+      for(var d=0;d<7;d++){
+        for(var s=0;s<5;s++){
+          var el=document.getElementById('m'+mi+'d'+d+'s'+s);
+          if(el)estado['fila_'+mi]['m'+mi+'d'+d+'s'+s]=el.value;
+        }
+      }
+    });
+  }
+  if(indices.dias){
+    indices.dias.forEach(function(dia){
+      estado['dia_'+dia]={};
+      for(var mi=0;mi<N;mi++){
+        for(var s=0;s<5;s++){
+          var el=document.getElementById('m'+mi+'d'+dia+'s'+s);
+          if(el)estado['dia_'+dia]['m'+mi+'d'+dia+'s'+s]=el.value;
+        }
+      }
+    });
+  }
+  return estado;
+}
+function restaurarEstadoCeldas(estado){
+  for(var clave in estado){
+    for(var elId in estado[clave]){
+      var el=document.getElementById(elId);
+      if(el)el.value=estado[clave][elId];
+    }
+  }
+}
 function replicarTodo(){
+  var tipoPegado='todo';
+  var esReversi=ultimoPegado.tipo===tipoPegado&&ultimoPegado.indice===null&&ultimoPegado.estadoGuardado;
+  if(esReversi){
+    restaurarEstadoCeldas(ultimoPegado.estadoGuardado);
+    ultimoPegado={tipo:null,indice:null,estadoGuardado:null};
+    return;
+  }
+  var filasAcopiar=[];for(var i=0;i<N;i++)filasAcopiar.push(i);
+  var estadoGuardado=guardarEstadoCeldas({filas:filasAcopiar});
   for(var mi=0;mi<N;mi++){
     var nombre=document.getElementById('m'+mi+'n');
     if(!nombre)continue;
     if(nombre.value.trim().toUpperCase().indexOf('SOS')===0)continue;
     replicarFila(mi);
   }
+  ultimoPegado={tipo:tipoPegado,indice:null,estadoGuardado:estadoGuardado};
 }
 // NUEVO: pegado vertical — replica la columna del Día 1 sobre un día específico, sobrescribiendo
 function pegarVerticalDia(diaDestino){
+  var tipoPegado='dia';
+  var esReversi=ultimoPegado.tipo===tipoPegado&&ultimoPegado.indice===diaDestino&&ultimoPegado.estadoGuardado;
+  if(esReversi){
+    restaurarEstadoCeldas(ultimoPegado.estadoGuardado);
+    ultimoPegado={tipo:null,indice:null,estadoGuardado:null};
+    return;
+  }
+  var diasAguardar=[diaDestino];
+  var estadoGuardado=guardarEstadoCeldas({dias:diasAguardar});
   for(var mi=0;mi<N;mi++){
     var nEl=document.getElementById('m'+mi+'n');
     if(!nEl)continue;
@@ -517,8 +614,17 @@ function pegarVerticalDia(diaDestino){
       if(e2)e2.value=fuente[s];
     }
   }
+  ultimoPegado={tipo:tipoPegado,indice:diaDestino,estadoGuardado:estadoGuardado};
 }
 function replicarFila(mi){
+  var tipoPegado='fila';
+  var esReversi=ultimoPegado.tipo===tipoPegado&&ultimoPegado.indice===mi&&ultimoPegado.estadoGuardado;
+  if(esReversi){
+    restaurarEstadoCeldas(ultimoPegado.estadoGuardado);
+    ultimoPegado={tipo:null,indice:null,estadoGuardado:null};
+    return;
+  }
+  var estadoGuardado=guardarEstadoCeldas({filas:[mi]});
   var ultimaCol=-1;
   for(var mj=0;mj<7;mj++){
     for(var s=0;s<5;s++){
@@ -526,7 +632,7 @@ function replicarFila(mi){
       if(el&&el.value.trim()){ultimaCol=mj;break;}
     }
   }
-  if(ultimaCol<0||ultimaCol===6)return;
+  if(ultimaCol<0||ultimaCol===6){ultimoPegado={tipo:null,indice:null,estadoGuardado:null};return;}
   var fuente=[];
   for(var s=0;s<5;s++){
     var el=document.getElementById('m'+mi+'d'+ultimaCol+'s'+s);
@@ -545,6 +651,7 @@ function replicarFila(mi){
       }
     }
   }
+  ultimoPegado={tipo:tipoPegado,indice:mi,estadoGuardado:estadoGuardado};
 }
 function confirmarImpresion(){
   if(confirm('Antes de imprimir, confirme que ha revisado la tabla:\n\n¿Verificó el nombre del paciente, diagnóstico, alergias, médico tratante, fármacos e indicaciones SOS?\n\nPresione Aceptar para imprimir o Cancelar para revisar.'))window.print();
