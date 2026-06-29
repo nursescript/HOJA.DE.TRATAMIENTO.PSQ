@@ -290,7 +290,7 @@ function procTexto(texto){
     function processCond(cond){
       var cl=cond.toLowerCase();
       var etq=cond?'SOS '+cond.toUpperCase():'SOS';
-      if(cl.indexOf('agitaci')>=0){r.sos.ag=medication;return;}
+      if(cl.indexOf('agitaci')>=0){if(r.sos.ag){r.sos.ag='1°: '+r.sos.ag+' / 2°: '+medication;}else{r.sos.ag=medication;}return;}
       if(cl.indexOf('insomnio')>=0){r.sos.ino=medication;return;}
       if(cl.indexOf('diston')>=0){r.sos.di=medication;return;}
       if(cl.indexOf('angustia')>=0||cl.indexOf('ansiedad')>=0){
